@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Request a Song - CrowdFuel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore-compat.js"></script>
+    <script src="https://js.stripe.com/v3/"></script>
+</head>
+<body class="bg-gray-50">
+    <!-- Loading State -->
+    <div id="loading" class="min-h-screen flex items-center justify-center">
+        <div class="text-center">
+            <div class="animate-spin rounded-full h-16 w-16 border-b-4 border-purple-600 mx-auto mb-4"></div>
+            <p class="text-gray-600">Loading...</p>
+        </div>
+    </div>
+
+    <!-- Error State -->
+    <div id="error" class="hidden min-h-screen flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-lg p-8 max-w-md w-full text-center">
+            <svg class="w-16 h-16 mx-auto text-orange-500 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+            </svg>
+            <h2 class="text-2xl font-bold text-gray-900 mb-2">Error</h2>
+            <p class="text-gray-600" id="error-message">Something went wrong.</p>
+            <button onclick="window.history.back()" class="mt-4 bg-purple-600 text-white px-6 py-2 rounded-lg hover:bg-purple-700">
+                Go Back
+            </button>
+        </div>
+    </div>
+
+    <!-- Main Content -->
+    <div id="content" class="hidden min-h-screen">
+        <!-- Header -->
+        <div class="bg-gradient-to-r from-purple-600 to-indigo-600 text-white">
+            <div class="max-w-4xl mx-auto px-4 py-8">
+                <div class="text-center">
+                    <svg class="w-16 h-16 mx-auto mb-4 opacity-90" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M18 3a1 1 0 00-1.196-.98l-10 2A1 1 0 006 5v9.114A4.369 4.369 0 005 14c-1.657 0-3 .895-3 2s1.343 2 3 2 3-.895 3-2V7.82l8-1.6v5.894A4.37 4.37 0 0015 12c-1.657 0-3 .895-3 2s1.343 2 3 2 3-.895 3-2V3z"/>
+                    </svg>
+                    <h1 id="band-name" class="text-3xl font-bold mb-2">Loading...</h1>
+                    <h2 id="gig-title" class="text-xl mb-1 opacity-90">...</h2>
+                    <p id="venue-name" class="opacity-75">...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Song Request Form -->
+        <div class="max-w-4xl mx-auto px-4 py-8">
+            <div class="bg-white rounded-2xl shadow-lg p-8">
+                <div class="text-center mb-8">
+                    <h2 id="song-title" class="text-2xl font-bold text-gray-900 mb-2">Loading...</h2>
+                    <p id="song-artist" class="text-gray-600 text-lg">...</p>
+                    <p id="min-tip" class="text-purple-600 font-semibold mt-2">Minimum tip: $0.00</p>
+                </div>
+
+                <form id="request-form" class="space-y-6">
+                    <div>
+                        <label for="fan-name" class="block text-sm font-medium text-gray-700 mb-2">
+                            Your Name
+                        </label>
+                        <input type="text" id="fan-name" name="fanName" required
+                               class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                               placeholder="Enter your name">
+                    </div>
+
+                    <div>
+                        <label for="tip-amount" class="block text-sm font-medium text-gray-700 mb-2">
+                            Tip Amount
+                        </label>
+                        <div class="relative">
+                            <span class="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500">$</span>
+                            <input type="number" id="tip-amount" name="tipAmount" required min="0" step="0.01"
+                                   class="w-full pl-8 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                                   placeholder="0.00">
+                        </div>
+                        <p class="text-sm text-gray-500 mt-1">Higher tips get played sooner!</p>
+                    </div>
+
+                    <div>
+                        <label for="message" class="block text-sm font-medium text-gray-700 mb-2">
+                            Message (Optional)
+                        </label>
+                        <textarea id="message" name="message" rows="3"
+                                  class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                                  placeholder="Add a message for the band..."></textarea>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            Card Information
+                        </label>
+                        <div id="card-element" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus-within:ring-2 focus-within:ring-purple-500 focus-within:border-transparent">
+                            <!-- Stripe Card Element will be inserted here -->
+                        </div>
+                        <div id="card-errors" class="text-red-600 text-sm mt-2"></div>
+                        <p class="text-xs text-gray-500 mt-2">
+                            💳 Test card: 4242 4242 4242 4242 | Any future date | Any CVC
+                        </p>
+                    </div>
+
+                    <button type="submit" id="submit-btn"
+                            class="w-full bg-gradient-to-r from-purple-600 to-indigo-600 text-white py-4 px-6 rounded-lg font-semibold text-lg hover:from-purple-700 hover:to-indigo-700 transition-all duration-200 transform hover:scale-105">
+                        Request Song
+                    </button>
+                </form>
+            </div>
+
+            <!-- Success Message -->
+            <div id="success" class="hidden mt-8 bg-green-50 border-l-4 border-green-500 p-6 rounded-r-lg">
+                <div class="flex items-center">
+                    <svg class="w-8 h-8 text-green-500 mr-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                    </svg>
+                    <div>
+                        <h3 class="text-lg font-semibold text-green-900">Request Submitted!</h3>
+                        <p class="text-green-700">Your song request has been added to the queue. Thanks for supporting the band!</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Firebase Configuration -->
+    <script>
+        const firebaseConfig = {
+            apiKey: "AIzaSyBOGnxvY8QZxE9iQJ_fH_7K8eWxY3kX9mM",
+            authDomain: "crowdfuel-86c2b.firebaseapp.com",
+            projectId: "crowdfuel-86c2b",
+            storageBucket: "crowdfuel-86c2b.firebasestorage.app",
+            messagingSenderId: "1058572688549",
+            appId: "1:1058572688549:ios:8f0e9b7c6d5a4f3e2b1c0d"
+        };
+
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+
+        // Initialize Stripe
+        const stripe = Stripe('pk_test_51SItcHCKgnXBZQV6dsQlmKbLC77g8gfVZeVQfYYm8fjTafwzeCXVJdf9KsWCiyXwIOhOdfKDuTFY9WgnfIJkVkIJ00irWA5PhH');
+        const backendURL = 'https://crowdfuel-backend.onrender.com';
+        
+        // Create Stripe Elements
+        const elements = stripe.elements();
+        const cardElement = elements.create('card', {
+            style: {
+                base: {
+                    fontSize: '16px',
+                    color: '#32325d',
+                    '::placeholder': {
+                        color: '#aab7c4'
+                    }
+                }
+            }
+        });
+
+        // Get parameters from URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const gigId = urlParams.get('gig');
+        const songId = urlParams.get('song');
+        
+        // Global variables to store loaded data
+        let currentSong = null;
+        let currentGig = null;
+        let currentBand = null;
+
+        console.log('Gig ID:', gigId);
+        console.log('Song ID:', songId);
+
+        if (!gigId || !songId) {
+            showError('Invalid request. Please go back and try again.');
+        } else {
+            loadData();
+        }
+
+        async function loadData() {
+            try {
+                // Load gig
+                const gigDoc = await db.collection('gigs').doc(gigId).get();
+                if (!gigDoc.exists) {
+                    showError('Gig not found');
+                    return;
+                }
+                currentGig = { id: gigDoc.id, ...gigDoc.data() };
+
+                // Load band
+                const bandDoc = await db.collection('bands').doc(currentGig.bandId).get();
+                if (!bandDoc.exists) {
+                    showError('Band not found');
+                    return;
+                }
+                currentBand = { id: bandDoc.id, ...bandDoc.data() };
+
+                // Load song
+                const songDoc = await db.collection('bands').doc(currentGig.bandId).collection('songs').doc(songId).get();
+                if (!songDoc.exists) {
+                    showError('Song not found');
+                    return;
+                }
+                currentSong = { id: songDoc.id, ...songDoc.data() };
+
+                // Display data
+                document.getElementById('band-name').textContent = currentBand.name;
+                document.getElementById('gig-title').textContent = currentGig.title;
+                document.getElementById('venue-name').textContent = currentGig.venueName;
+                document.getElementById('song-title').textContent = currentSong.title;
+                document.getElementById('song-artist').textContent = currentSong.artist;
+                // Check if minTip is stored in cents or dollars
+                const minTipDollars = currentSong.minTip > 100 ? (currentSong.minTip / 100).toFixed(2) : currentSong.minTip.toFixed(2);
+                document.getElementById('min-tip').textContent = `Minimum tip: $${minTipDollars}`;
+
+                // Set minimum tip as default
+                const minTipValue = currentSong.minTip > 100 ? currentSong.minTip / 100 : currentSong.minTip;
+                document.getElementById('tip-amount').min = minTipValue;
+                document.getElementById('tip-amount').value = minTipValue;
+
+                // Show content
+                document.getElementById('loading').classList.add('hidden');
+                document.getElementById('content').classList.remove('hidden');
+                
+                // Mount Stripe card element
+                cardElement.mount('#card-element');
+                
+                // Handle card errors
+                cardElement.on('change', function(event) {
+                    const displayError = document.getElementById('card-errors');
+                    if (event.error) {
+                        displayError.textContent = event.error.message;
+                    } else {
+                        displayError.textContent = '';
+                    }
+                });
+
+            } catch (error) {
+                console.error('Error loading data:', error);
+                showError('Failed to load information');
+            }
+        }
+
+        // Handle form submission
+        document.getElementById('request-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const submitBtn = document.getElementById('submit-btn');
+            const originalText = submitBtn.textContent;
+            submitBtn.textContent = 'Submitting...';
+            submitBtn.disabled = true;
+
+            try {
+                const formData = new FormData(e.target);
+                const tipAmount = parseFloat(formData.get('tipAmount')); // Keep as dollars
+                const minTip = parseFloat(document.getElementById('tip-amount').min);
+
+                if (tipAmount < minTip) {
+                    alert(`Tip must be at least $${minTip.toFixed(2)}`);
+                    submitBtn.textContent = originalText;
+                    submitBtn.disabled = false;
+                    return;
+                }
+
+                const tipCents = Math.round(tipAmount * 100);
+                const fanName = formData.get('fanName');
+                const note = formData.get('message') || '';
+
+                // Check if band has Stripe account
+                if (!currentBand.stripeAccountId) {
+                    alert('This band has not set up payouts yet. Payments are not available.');
+                    submitBtn.textContent = originalText;
+                    submitBtn.disabled = false;
+                    return;
+                }
+
+                // Step 1: Create Payment Intent via backend
+                submitBtn.textContent = 'Processing payment...';
+                const paymentResponse = await fetch(`${backendURL}/create-payment-intent`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        amount: tipCents,
+                        currency: 'usd',
+                        bandStripeAccountId: currentBand.stripeAccountId,
+                        description: `Tip for ${currentSong.title} at ${currentGig.title}`
+                    })
+                });
+
+                if (!paymentResponse.ok) {
+                    throw new Error('Failed to create payment intent');
+                }
+
+                const { clientSecret, paymentIntentId, platformFee } = await paymentResponse.json();
+                console.log('Payment Intent created:', paymentIntentId);
+                console.log('Platform fee:', platformFee, 'cents');
+
+                // Step 2: Confirm payment with Stripe
+                submitBtn.textContent = 'Confirming payment...';
+                const { error: stripeError, paymentIntent } = await stripe.confirmCardPayment(clientSecret, {
+                    payment_method: {
+                        card: cardElement,
+                        billing_details: {
+                            name: fanName
+                        }
+                    }
+                });
+
+                if (stripeError) {
+                    throw new Error(stripeError.message);
+                }
+                
+                console.log('Payment status:', paymentIntent.status);
+
+                console.log('Payment confirmed!');
+
+                // Step 3: Save request to Firestore
+                submitBtn.textContent = 'Saving request...';
+                const requestData = {
+                    songId: songId,
+                    songTitle: currentSong.title,
+                    fanName: fanName,
+                    tipCents: tipCents,
+                    note: note,
+                    status: 'queued',
+                    currency: 'USD',
+                    priority: Date.now(),
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                    paymentIntentId: paymentIntentId,
+                    paymentStatus: 'succeeded',
+                    platformFee: platformFee
+                };
+                
+                await db.collection('gigs').doc(gigId).collection('requests').add(requestData);
+
+                // Show success
+                document.getElementById('request-form').classList.add('hidden');
+                document.getElementById('success').classList.remove('hidden');
+
+            } catch (error) {
+                console.error('Error submitting request:', error);
+                console.error('Error details:', error.message);
+                console.error('Error stack:', error.stack);
+                alert(`Failed to submit request: ${error.message}`);
+                submitBtn.textContent = originalText;
+                submitBtn.disabled = false;
+            }
+        });
+
+        function showError(message) {
+            document.getElementById('loading').classList.add('hidden');
+            document.getElementById('error').classList.remove('hidden');
+            document.getElementById('error-message').textContent = message;
+        }
+    </script>
+</body>
+</html>

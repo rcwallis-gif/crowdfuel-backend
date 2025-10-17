@@ -39,6 +39,9 @@ app.get('/', (req, res) => {
  * Create Stripe Connect account for a band
  * POST /create-connect-account
  * Body: { bandId, email, country }
+ * 
+ * Note: This endpoint creates the Stripe account but does NOT save to Firestore
+ * The iOS app is responsible for saving the accountId after successful onboarding
  */
 app.post('/create-connect-account', async (req, res) => {
   try {
@@ -60,11 +63,13 @@ app.post('/create-connect-account', async (req, res) => {
       business_type: 'individual',
     });
 
+    console.log(`✅ Created Stripe account ${account.id} for band ${bandId}`);
+
     // Create account link for onboarding
     const accountLink = await stripe.accountLinks.create({
       account: account.id,
       refresh_url: `https://crowdfuel-86c2b.web.app/connect/refresh.html`,
-      return_url: `https://crowdfuel-86c2b.web.app/connect/return.html`,
+      return_url: `https://crowdfuel-86c2b.web.app/connect/return.html?accountId=${account.id}&bandId=${bandId}`,
       type: 'account_onboarding',
     });
 

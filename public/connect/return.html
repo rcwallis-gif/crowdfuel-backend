@@ -37,7 +37,40 @@
         </div>
     </div>
     
+    <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore-compat.js"></script>
     <script>
+        // Firebase configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyBqVc8fY3gH2jK4lM5nO6pQ7rS8tU9vW0x",
+            authDomain: "crowdfuel-86c2b.firebaseapp.com",
+            projectId: "crowdfuel-86c2b",
+            storageBucket: "crowdfuel-86c2b.firebasestorage.app",
+            messagingSenderId: "1058572688549",
+            appId: "1:1058572688549:ios:8f0e9b7c6d5a4f3e2b1c0d"
+        };
+
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+
+        // Get parameters from URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const accountId = urlParams.get('accountId');
+        const bandId = urlParams.get('bandId');
+
+        // Save Stripe account ID to Firestore
+        if (accountId && bandId) {
+            db.collection('bands').doc(bandId).update({
+                stripeAccountId: accountId,
+                stripeAccountStatus: 'pending',
+                stripeDetailsSubmitted: true
+            }).then(() => {
+                console.log('✅ Stripe account ID saved to Firestore');
+            }).catch((error) => {
+                console.error('Error saving account ID:', error);
+            });
+        }
+
         // Auto-close after 3 seconds
         setTimeout(() => {
             window.close();
