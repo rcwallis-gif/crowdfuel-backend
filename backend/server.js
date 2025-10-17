@@ -63,8 +63,8 @@ app.post('/create-connect-account', async (req, res) => {
     // Create account link for onboarding
     const accountLink = await stripe.accountLinks.create({
       account: account.id,
-      refresh_url: `https://crowdfuel-86c2b.web.app/connect/refresh`,
-      return_url: `https://crowdfuel-86c2b.web.app/connect/return`,
+      refresh_url: `https://crowdfuel-86c2b.web.app/connect/refresh.html`,
+      return_url: `https://crowdfuel-86c2b.web.app/connect/return.html`,
       type: 'account_onboarding',
     });
 
