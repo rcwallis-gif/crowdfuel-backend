@@ -110,7 +110,7 @@ app.post('/connect-account-status', async (req, res) => {
 });
 
 /**
- * Create payment intent with 5% platform fee
+ * Create payment intent with 9.5% platform fee
  * POST /create-payment-intent
  * Body: { amount, currency, bandStripeAccountId, description }
  */
@@ -122,8 +122,8 @@ app.post('/create-payment-intent', async (req, res) => {
       return res.status(400).json({ error: 'amount and bandStripeAccountId are required' });
     }
 
-    // Calculate platform fee (5%)
-    const platformFee = Math.round(amount * 0.05);
+    // Calculate platform fee (9.5%)
+    const platformFee = Math.round(amount * 0.095);
 
     // Create payment intent with application fee
     const paymentIntent = await stripe.paymentIntents.create({
