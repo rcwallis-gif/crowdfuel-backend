@@ -110,20 +110,32 @@ app.post('/connect-account-status', async (req, res) => {
 });
 
 /**
- * Create payment intent with 9.5% platform fee
+ * Create payment intent with 10% platform fee
  * POST /create-payment-intent
  * Body: { amount, currency, bandStripeAccountId, description }
  */
 app.post('/create-payment-intent', async (req, res) => {
   try {
-    const { amount, currency = 'usd', bandStripeAccountId, description } = req.body;
+    const { amount, currency = 'usd', bandStripeAccountId, description, gigId, songId, songTitle, fanName } = req.body;
 
     if (!amount || !bandStripeAccountId) {
       return res.status(400).json({ error: 'amount and bandStripeAccountId are required' });
     }
 
-    // Calculate platform fee (9.5%)
-    const platformFee = Math.round(amount * 0.095);
+    // Calculate platform fee (10%)
+    const platformFee = Math.round(amount * 0.10);
+
+    // Build metadata object - include all available fields
+    const metadata = {
+      bandStripeAccountId: bandStripeAccountId,
+      platformFee: platformFee.toString(),
+    };
+    
+    // Add optional metadata fields if provided (critical for webhook to create requests)
+    if (gigId) metadata.gigId = gigId;
+    if (songId) metadata.songId = songId;
+    if (songTitle) metadata.songTitle = songTitle;
+    if (fanName) metadata.fanName = fanName;
 
     // Create payment intent with application fee
     const paymentIntent = await stripe.paymentIntents.create({
@@ -134,13 +146,16 @@ app.post('/create-payment-intent', async (req, res) => {
         destination: bandStripeAccountId,
       },
       description: description,
+      payment_method_types: ['card'],
+      payment_method_options: {
+        card: {
+          request_three_d_secure: 'automatic',
+        },
+      },
       automatic_payment_methods: {
         enabled: true,
       },
-      metadata: {
-        bandStripeAccountId: bandStripeAccountId,
-        platformFee: platformFee,
-      },
+      metadata: metadata,
     });
 
     res.json({
