@@ -146,14 +146,13 @@ app.post('/create-payment-intent', async (req, res) => {
         destination: bandStripeAccountId,
       },
       description: description,
-      payment_method_types: ['card'],
+      automatic_payment_methods: {
+        enabled: true,
+      },
       payment_method_options: {
         card: {
           request_three_d_secure: 'automatic',
         },
-      },
-      automatic_payment_methods: {
-        enabled: true,
       },
       metadata: metadata,
     });
