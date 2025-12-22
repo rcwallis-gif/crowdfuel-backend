@@ -7,6 +7,31 @@ const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
 
+// Initialize Firebase Admin SDK
+let admin;
+let db;
+try {
+  admin = require('firebase-admin');
+  
+  // Initialize Firebase Admin with credentials from environment variable or default credentials
+  if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    // If service account JSON is provided as environment variable
+    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+  } else {
+    // Try to use default credentials (works on Firebase Functions, Google Cloud, etc.)
+    admin.initializeApp();
+  }
+  
+  db = admin.firestore();
+  console.log('✅ Firebase Admin initialized successfully');
+} catch (error) {
+  console.error('❌ Error initializing Firebase Admin:', error.message);
+  console.warn('⚠️ Webhook handler will not be able to create requests in Firestore');
+}
+
 // Initialize Stripe with error handling
 let stripe;
 try {
@@ -217,6 +242,66 @@ app.post('/webhook', async (req, res) => {
       console.log('PaymentIntent succeeded:', paymentIntent.id);
       console.log('Platform fee:', paymentIntent.application_fee_amount);
       console.log('Band account:', paymentIntent.transfer_data?.destination);
+      console.log('Metadata:', paymentIntent.metadata);
+      
+      // Create request in Firestore as backup (in case frontend save failed)
+      if (db && paymentIntent.metadata && paymentIntent.metadata.gigId) {
+        try {
+          const gigId = paymentIntent.metadata.gigId;
+          const songId = paymentIntent.metadata.songId || 'tip-only';
+          const songTitle = paymentIntent.metadata.songTitle || 'Tip Only';
+          const fanName = paymentIntent.metadata.fanName || 'Anonymous';
+          const tipCents = paymentIntent.amount;
+          const platformFee = paymentIntent.application_fee_amount || Math.round(paymentIntent.amount * 0.10);
+          
+          // Check if request with this paymentIntentId already exists
+          const requestsRef = db.collection('gigs').doc(gigId).collection('requests');
+          const existingSnapshot = await requestsRef
+            .where('paymentIntentId', '==', paymentIntent.id)
+            .limit(1)
+            .get();
+          
+          if (existingSnapshot.empty) {
+            // Request doesn't exist - create it
+            const requestData = {
+              songId: songId,
+              songTitle: songTitle,
+              fanName: fanName,
+              tipCents: tipCents,
+              note: '',
+              status: songId === 'tip-only' ? 'tip-only' : 'queued',
+              currency: paymentIntent.currency.toUpperCase(),
+              priority: Date.now(),
+              createdAt: admin.firestore.FieldValue.serverTimestamp(),
+              paymentIntentId: paymentIntent.id,
+              paymentStatus: 'succeeded',
+              platformFee: platformFee,
+              createdVia: 'webhook' // Mark as created via webhook for debugging
+            };
+            
+            await requestsRef.add(requestData);
+            console.log('✅ Created request in Firestore via webhook:', paymentIntent.id);
+            console.log('Gig ID:', gigId);
+            console.log('Song ID:', songId);
+            console.log('Fan Name:', fanName);
+            console.log('Tip Amount:', tipCents, 'cents');
+          } else {
+            console.log('ℹ️ Request already exists in Firestore for payment:', paymentIntent.id);
+          }
+        } catch (error) {
+          console.error('❌ Error creating request in Firestore via webhook:', error);
+          console.error('Payment Intent ID:', paymentIntent.id);
+          console.error('Error details:', error.message);
+          // Don't throw - webhook should still return success to Stripe
+        }
+      } else {
+        if (!db) {
+          console.warn('⚠️ Firebase Admin not initialized - cannot create request via webhook');
+        } else if (!paymentIntent.metadata || !paymentIntent.metadata.gigId) {
+          console.warn('⚠️ Missing metadata in payment intent - cannot create request via webhook');
+          console.warn('Metadata:', paymentIntent.metadata);
+        }
+      }
       break;
 
     case 'payment_intent.payment_failed':
