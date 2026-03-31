@@ -6,56 +6,66 @@
 //
 
 import SwiftUI
-import SwiftData
 
+@MainActor
 struct ContentView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query private var items: [Item]
-
+    @EnvironmentObject var firebaseService: FirebaseService
+    @State private var isInitializing = true
+    
     var body: some View {
-        NavigationSplitView {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))")
-                    } label: {
-                        Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
+        Group {
+            // Use && / ! instead of || so Swift doesn’t mis-infer @State vs @EnvironmentObject (Binding vs Bool).
+            if !isInitializing && !firebaseService.isLoadingBand {
+                if firebaseService.isAuthenticated {
+                    if firebaseService.currentBand != nil {
+                        MainTabView()
+                    } else {
+                        BandSetupView()
                     }
+                } else {
+                    AuthenticationView()
                 }
-                .onDelete(perform: deleteItems)
+            } else {
+                // Loading screen during initial authentication check or band loading
+                LoadingView()
             }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
-                    }
-                }
-            }
-        } detail: {
-            Text("Select an item")
         }
-    }
-
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(timestamp: Date())
-            modelContext.insert(newItem)
-        }
-    }
-
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            for index in offsets {
-                modelContext.delete(items[index])
+        .animation(.easeInOut, value: firebaseService.isAuthenticated)
+        .onAppear {
+            // Give Firebase time to check authentication state
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                isInitializing = false
             }
         }
     }
 }
 
+struct LoadingView: View {
+    var body: some View {
+        VStack(spacing: 20) {
+            // App icon or logo
+            Image("cficon")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 80, height: 80)
+            
+            Text("CrowdFuel")
+                .font(.largeTitle)
+                .fontWeight(.bold)
+            
+            ProgressView()
+                .scaleEffect(1.2)
+            
+            Text("Loading...")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+    }
+}
+
 #Preview {
     ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
+        .environmentObject(FirebaseService.shared)
 }
