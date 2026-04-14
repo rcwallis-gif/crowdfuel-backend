@@ -45,6 +45,103 @@ try {
   console.error('❌ Error initializing Stripe:', error.message);
 }
 
+/**
+ * Push FCM alerts to the band owner's registered iOS devices when a payment succeeds.
+ * Uses Stripe metadata (gigId, fanName, songId, songTitle) and loads bandId from the gig.
+ */
+async function sendTipOrRequestPushNotifications(paymentIntent) {
+  if (!db || !admin?.messaging) return;
+  const meta = paymentIntent.metadata || {};
+  const gigId = meta.gigId;
+  if (!gigId) return;
+
+  let bandId;
+  try {
+    const gigDoc = await db.collection('gigs').doc(gigId).get();
+    if (!gigDoc.exists) {
+      console.warn('⚠️ sendTipPush: gig not found:', gigId);
+      return;
+    }
+    bandId = gigDoc.data().bandId;
+    if (!bandId) return;
+  } catch (e) {
+    console.error('❌ sendTipPush: failed to load gig:', e.message);
+    return;
+  }
+
+  let tokensSnap;
+  try {
+    tokensSnap = await db.collection('bands').doc(bandId).collection('fcmTokens').get();
+  } catch (e) {
+    console.error('❌ sendTipPush: failed to read fcmTokens:', e.message);
+    return;
+  }
+
+  if (tokensSnap.empty) {
+    console.log('ℹ️ sendTipPush: no FCM tokens for band', bandId);
+    return;
+  }
+
+  const tokens = tokensSnap.docs.map((d) => d.id);
+  const fanName = meta.fanName || 'A fan';
+  const songId = meta.songId || 'tip-only';
+  const songTitle = meta.songTitle || 'Tip';
+  const tipCents = paymentIntent.amount;
+  const currency = (paymentIntent.currency || 'usd').toUpperCase();
+  const amountLabel =
+    currency === 'USD'
+      ? `$${(tipCents / 100).toFixed(2)}`
+      : `${(tipCents / 100).toFixed(2)} ${currency}`;
+
+  let title;
+  let body;
+  if (songId === 'tip-only') {
+    title = 'New tip!';
+    body = `${fanName} sent ${amountLabel}.`;
+  } else {
+    title = 'New song request!';
+    body = `${fanName} tipped ${amountLabel} for "${songTitle}".`;
+  }
+
+  const messaging = admin.messaging();
+  try {
+    const resp = await messaging.sendEachForMulticast({
+      tokens,
+      notification: { title, body },
+      data: {
+        gigId: String(gigId),
+        bandId: String(bandId),
+        type: songId === 'tip-only' ? 'tip_only' : 'song_request',
+      },
+      apns: {
+        payload: {
+          aps: {
+            sound: 'default',
+            contentAvailable: true,
+          },
+        },
+      },
+    });
+    console.log(`📣 sendTipPush: ${resp.successCount}/${tokens.length} delivered for band ${bandId}`);
+
+    resp.responses.forEach((r, i) => {
+      if (r.success) return;
+      const code = r.error?.code || '';
+      if (
+        code === 'messaging/registration-token-not-registered' ||
+        code === 'messaging/invalid-registration-token'
+      ) {
+        const doc = tokensSnap.docs[i];
+        if (doc) {
+          doc.ref.delete().catch(() => {});
+        }
+      }
+    });
+  } catch (e) {
+    console.error('❌ sendTipPush: FCM send failed:', e.message);
+  }
+}
+
 const app = express();
 const PORT = process.env.PORT || 8080;
 
@@ -141,7 +238,7 @@ app.post('/connect-account-status', async (req, res) => {
  */
 app.post('/create-payment-intent', async (req, res) => {
   try {
-    const { amount, currency = 'usd', bandStripeAccountId, description, gigId, songId, songTitle, fanName } = req.body;
+    const { amount, currency = 'usd', bandStripeAccountId, description, gigId, songId, songTitle, fanName, fanEmail, fanPhone } = req.body;
 
     if (!amount || !bandStripeAccountId) {
       return res.status(400).json({ error: 'amount and bandStripeAccountId are required' });
@@ -161,6 +258,8 @@ app.post('/create-payment-intent', async (req, res) => {
     if (songId) metadata.songId = songId;
     if (songTitle) metadata.songTitle = songTitle;
     if (fanName) metadata.fanName = fanName;
+    if (fanEmail) metadata.fanEmail = fanEmail;
+    if (fanPhone) metadata.fanPhone = fanPhone;
 
     // Create payment intent with application fee
     const paymentIntent = await stripe.paymentIntents.create({
@@ -251,6 +350,8 @@ app.post('/webhook', async (req, res) => {
           const songId = paymentIntent.metadata.songId || 'tip-only';
           const songTitle = paymentIntent.metadata.songTitle || 'Tip Only';
           const fanName = paymentIntent.metadata.fanName || 'Anonymous';
+          const fanEmail = paymentIntent.metadata.fanEmail || null;
+          const fanPhone = paymentIntent.metadata.fanPhone || null;
           const tipCents = paymentIntent.amount;
           const platformFee = paymentIntent.application_fee_amount || Math.round(paymentIntent.amount * 0.10);
           
@@ -276,7 +377,9 @@ app.post('/webhook', async (req, res) => {
               paymentIntentId: paymentIntent.id,
               paymentStatus: 'succeeded',
               platformFee: platformFee,
-              createdVia: 'webhook' // Mark as created via webhook for debugging
+              createdVia: 'webhook', // Mark as created via webhook for debugging
+              ...(fanEmail && { fanEmail }),
+              ...(fanPhone && { fanPhone })
             };
             
             await requestsRef.add(requestData);
@@ -302,6 +405,12 @@ app.post('/webhook', async (req, res) => {
           console.warn('Metadata:', paymentIntent.metadata);
         }
       }
+
+      if (db && paymentIntent.metadata && paymentIntent.metadata.gigId) {
+        sendTipOrRequestPushNotifications(paymentIntent).catch((err) => {
+          console.error('❌ sendTipPush (async):', err.message);
+        });
+      }
       break;
 
     case 'payment_intent.payment_failed':
@@ -314,6 +423,27 @@ app.post('/webhook', async (req, res) => {
       console.log('Account updated:', account.id);
       console.log('Charges enabled:', account.charges_enabled);
       console.log('Payouts enabled:', account.payouts_enabled);
+      console.log('Details submitted:', account.details_submitted);
+      // When Connect account completes onboarding, mark band as active in Firestore
+      const isFullyActive = account.charges_enabled && account.payouts_enabled && account.details_submitted;
+      if (isFullyActive && db) {
+        try {
+          const bandsSnapshot = await db.collection('bands')
+            .where('stripeAccountId', '==', account.id)
+            .limit(1)
+            .get();
+          if (!bandsSnapshot.empty) {
+            const bandDoc = bandsSnapshot.docs[0];
+            await bandDoc.ref.update({
+              stripeAccountStatus: 'active',
+              stripeDetailsSubmitted: true
+            });
+            console.log('✅ Updated band', bandDoc.id, 'stripeAccountStatus to active');
+          }
+        } catch (err) {
+          console.error('Error updating band stripeAccountStatus:', err);
+        }
+      }
       break;
 
     case 'transfer.created':
