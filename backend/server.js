@@ -155,10 +155,14 @@ const PORT = process.env.PORT || 8080;
 
 // Middleware
 app.use(cors());
-app.use(bodyParser.json());
-
-// For Stripe webhooks - needs raw body
-app.use('/webhook', bodyParser.raw({ type: 'application/json' }));
+// Stripe webhooks must see the raw body; global JSON parsing breaks signature verification.
+app.use((req, res, next) => {
+  const path = req.originalUrl.split('?')[0];
+  if (path === '/webhook') {
+    return bodyParser.raw({ type: 'application/json' })(req, res, next);
+  }
+  return bodyParser.json()(req, res, next);
+});
 
 // Health check
 app.get('/', (req, res) => {
