@@ -50,10 +50,16 @@ try {
  * Uses Stripe metadata (gigId, fanName, songId, songTitle) and loads bandId from the gig.
  */
 async function sendTipOrRequestPushNotifications(paymentIntent) {
-  if (!db || !admin?.messaging) return;
+  if (!db) {
+    console.warn('⚠️ sendTipPush: skipped — Firestore not initialized (check FIREBASE_SERVICE_ACCOUNT on Render)');
+    return;
+  }
   const meta = paymentIntent.metadata || {};
   const gigId = meta.gigId;
-  if (!gigId) return;
+  if (!gigId) {
+    console.warn('⚠️ sendTipPush: skipped — payment intent has no metadata.gigId');
+    return;
+  }
 
   let bandId;
   try {
@@ -127,6 +133,8 @@ async function sendTipOrRequestPushNotifications(paymentIntent) {
     resp.responses.forEach((r, i) => {
       if (r.success) return;
       const code = r.error?.code || '';
+      const msg = r.error?.message || '';
+      console.warn(`⚠️ sendTipPush: token ${i + 1} failed: ${code} ${msg}`);
       if (
         code === 'messaging/registration-token-not-registered' ||
         code === 'messaging/invalid-registration-token'
