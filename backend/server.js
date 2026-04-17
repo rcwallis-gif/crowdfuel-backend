@@ -367,42 +367,32 @@ app.post('/webhook', async (req, res) => {
           const tipCents = paymentIntent.amount;
           const platformFee = paymentIntent.application_fee_amount || Math.round(paymentIntent.amount * 0.10);
           
-          // Check if request with this paymentIntentId already exists
+          // Same document ID as client (paymentIntentId) so webhook + browser cannot double-create
           const requestsRef = db.collection('gigs').doc(gigId).collection('requests');
-          const existingSnapshot = await requestsRef
-            .where('paymentIntentId', '==', paymentIntent.id)
-            .limit(1)
-            .get();
-          
-          if (existingSnapshot.empty) {
-            // Request doesn't exist - create it
-            const requestData = {
-              songId: songId,
-              songTitle: songTitle,
-              fanName: fanName,
-              tipCents: tipCents,
-              note: '',
-              status: songId === 'tip-only' ? 'tip-only' : 'queued',
-              currency: paymentIntent.currency.toUpperCase(),
-              priority: Date.now(),
-              createdAt: admin.firestore.FieldValue.serverTimestamp(),
-              paymentIntentId: paymentIntent.id,
-              paymentStatus: 'succeeded',
-              platformFee: platformFee,
-              createdVia: 'webhook', // Mark as created via webhook for debugging
-              ...(fanEmail && { fanEmail }),
-              ...(fanPhone && { fanPhone })
-            };
-            
-            await requestsRef.add(requestData);
-            console.log('✅ Created request in Firestore via webhook:', paymentIntent.id);
-            console.log('Gig ID:', gigId);
-            console.log('Song ID:', songId);
-            console.log('Fan Name:', fanName);
-            console.log('Tip Amount:', tipCents, 'cents');
-          } else {
-            console.log('ℹ️ Request already exists in Firestore for payment:', paymentIntent.id);
-          }
+          const requestData = {
+            songId: songId,
+            songTitle: songTitle,
+            fanName: fanName,
+            tipCents: tipCents,
+            note: '',
+            status: songId === 'tip-only' ? 'tip-only' : 'queued',
+            currency: paymentIntent.currency.toUpperCase(),
+            priority: Date.now(),
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            paymentIntentId: paymentIntent.id,
+            paymentStatus: 'succeeded',
+            platformFee: platformFee,
+            createdVia: 'webhook',
+            ...(fanEmail && { fanEmail }),
+            ...(fanPhone && { fanPhone })
+          };
+
+          await requestsRef.doc(paymentIntent.id).set(requestData, { merge: true });
+          console.log('✅ Upserted request in Firestore via webhook:', paymentIntent.id);
+          console.log('Gig ID:', gigId);
+          console.log('Song ID:', songId);
+          console.log('Fan Name:', fanName);
+          console.log('Tip Amount:', tipCents, 'cents');
         } catch (error) {
           console.error('❌ Error creating request in Firestore via webhook:', error);
           console.error('Payment Intent ID:', paymentIntent.id);
