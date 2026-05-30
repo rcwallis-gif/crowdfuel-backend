@@ -15,10 +15,17 @@ try {
   
   // Initialize Firebase Admin with credentials from environment variable or default credentials
   if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-    // If service account JSON is provided as environment variable
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
     admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
+      credential: admin.credential.cert(serviceAccount),
+    });
+  } else if (process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+    admin.initializeApp({
+      credential: admin.credential.cert({
+        projectId: process.env.FIREBASE_PROJECT_ID || 'crowdfuel-86c2b',
+        clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+        privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      }),
     });
   } else {
     // Try to use default credentials (works on Firebase Functions, Google Cloud, etc.)
@@ -198,6 +205,29 @@ async function upsertGigRequest(paymentIntent, overrides = {}) {
   return requestData;
 }
 
+/**
+ * Poll Stripe until a payment intent reaches succeeded (Apple Pay can lag briefly).
+ */
+async function waitForPaymentSucceeded(paymentIntentId, maxWaitMs = 30000) {
+  const deadline = Date.now() + maxWaitMs;
+
+  while (Date.now() < deadline) {
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+
+    if (paymentIntent.status === 'succeeded') {
+      return paymentIntent;
+    }
+
+    if (paymentIntent.status === 'canceled' || paymentIntent.status === 'requires_payment_method') {
+      throw new Error(`Payment failed (status: ${paymentIntent.status})`);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+
+  throw new Error('Payment not completed in time');
+}
+
 const app = express();
 const PORT = process.env.PORT || 8080;
 
@@ -214,7 +244,12 @@ app.use((req, res, next) => {
 
 // Health check
 app.get('/', (req, res) => {
-  res.json({ status: 'CrowdFuel Backend Running', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'CrowdFuel Backend Running',
+    timestamp: new Date().toISOString(),
+    stripe: !!stripe,
+    firestore: !!db,
+  });
 });
 
 /**
@@ -365,7 +400,7 @@ app.post('/save-request', async (req, res) => {
       return res.status(503).json({ error: 'Payment service not configured' });
     }
     if (!db) {
-      return res.status(503).json({ error: 'Database not configured' });
+      return res.status(503).json({ error: 'Database not configured on server. Set FIREBASE_SERVICE_ACCOUNT on Render.' });
     }
 
     const {
@@ -381,23 +416,24 @@ app.post('/save-request', async (req, res) => {
       platformFee,
     } = req.body;
 
-    if (!paymentIntentId || !gigId) {
-      return res.status(400).json({ error: 'paymentIntentId and gigId are required' });
+    if (!paymentIntentId) {
+      return res.status(400).json({ error: 'paymentIntentId is required' });
     }
 
-    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
-
-    if (paymentIntent.status !== 'succeeded') {
-      return res.status(400).json({ error: `Payment not completed (status: ${paymentIntent.status})` });
-    }
-
+    const paymentIntent = await waitForPaymentSucceeded(paymentIntentId);
     const meta = paymentIntent.metadata || {};
-    if (meta.gigId && meta.gigId !== gigId) {
-      return res.status(400).json({ error: 'Gig ID does not match payment' });
+    const resolvedGigId = meta.gigId || gigId;
+
+    if (!resolvedGigId) {
+      return res.status(400).json({ error: 'Missing gigId in payment metadata' });
+    }
+
+    if (meta.gigId && gigId && meta.gigId !== gigId) {
+      console.warn('save-request gigId mismatch; using Stripe metadata', { clientGigId: gigId, metaGigId: meta.gigId });
     }
 
     await upsertGigRequest(paymentIntent, {
-      gigId,
+      gigId: resolvedGigId,
       songId,
       songTitle,
       fanName,
@@ -566,6 +602,8 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🔑 Environment variables:`);
   console.log(`   STRIPE_SECRET_KEY: ${process.env.STRIPE_SECRET_KEY ? '✅ Set' : '❌ Missing'}`);
   console.log(`   STRIPE_WEBHOOK_SECRET: ${process.env.STRIPE_WEBHOOK_SECRET ? '✅ Set' : '❌ Missing'}`);
+  console.log(`   FIREBASE_SERVICE_ACCOUNT: ${process.env.FIREBASE_SERVICE_ACCOUNT ? '✅ Set' : '❌ Missing'}`);
+  console.log(`   Firestore Admin: ${db ? '✅ Ready' : '❌ Not initialized'}`);
   console.log(`   PORT: ${PORT}`);
   console.log(`   NODE_ENV: ${process.env.NODE_ENV || 'not set'}`);
 }).on('error', (err) => {
