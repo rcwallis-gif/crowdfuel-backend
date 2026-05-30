@@ -150,6 +150,54 @@ async function sendTipOrRequestPushNotifications(paymentIntent) {
   }
 }
 
+/**
+ * Upsert a gig request document keyed by payment intent ID.
+ * Shared by the Stripe webhook and POST /save-request.
+ */
+async function upsertGigRequest(paymentIntent, overrides = {}) {
+  if (!db) {
+    throw new Error('Database not configured');
+  }
+
+  const meta = paymentIntent.metadata || {};
+  const gigId = overrides.gigId || meta.gigId;
+  if (!gigId) {
+    throw new Error('Missing gigId');
+  }
+
+  const songId = overrides.songId || meta.songId || 'tip-only';
+  const songTitle = overrides.songTitle || meta.songTitle || 'Tip Only';
+  const fanName = overrides.fanName || meta.fanName || 'Anonymous';
+  const fanEmail = overrides.fanEmail || meta.fanEmail || null;
+  const fanPhone = overrides.fanPhone || meta.fanPhone || null;
+  const tipCents = typeof overrides.tipCents === 'number' ? overrides.tipCents : paymentIntent.amount;
+  const platformFee = typeof overrides.platformFee === 'number'
+    ? overrides.platformFee
+    : (paymentIntent.application_fee_amount || Math.round(paymentIntent.amount * 0.10));
+  const note = overrides.note !== undefined ? overrides.note : (meta.note || '');
+
+  const requestData = {
+    songId,
+    songTitle,
+    fanName,
+    tipCents,
+    note,
+    status: songId === 'tip-only' ? 'tip-only' : 'queued',
+    currency: paymentIntent.currency.toUpperCase(),
+    priority: Date.now(),
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    paymentIntentId: paymentIntent.id,
+    paymentStatus: 'succeeded',
+    platformFee,
+    createdVia: overrides.createdVia || 'server',
+    ...(fanEmail && { fanEmail }),
+    ...(fanPhone && { fanPhone }),
+  };
+
+  await db.collection('gigs').doc(gigId).collection('requests').doc(paymentIntent.id).set(requestData, { merge: true });
+  return requestData;
+}
+
 const app = express();
 const PORT = process.env.PORT || 8080;
 
@@ -272,6 +320,7 @@ app.post('/create-payment-intent', async (req, res) => {
     if (fanName) metadata.fanName = fanName;
     if (fanEmail) metadata.fanEmail = fanEmail;
     if (fanPhone) metadata.fanPhone = fanPhone;
+    if (req.body.note) metadata.note = req.body.note;
 
     // Create payment intent with application fee
     const paymentIntent = await stripe.paymentIntents.create({
@@ -301,6 +350,73 @@ app.post('/create-payment-intent', async (req, res) => {
     });
   } catch (error) {
     console.error('Error creating payment intent:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Save a song request after payment succeeds (called by fan website).
+ * Verifies the payment intent with Stripe, then writes to Firestore via Admin SDK.
+ * POST /save-request
+ */
+app.post('/save-request', async (req, res) => {
+  try {
+    if (!stripe) {
+      return res.status(503).json({ error: 'Payment service not configured' });
+    }
+    if (!db) {
+      return res.status(503).json({ error: 'Database not configured' });
+    }
+
+    const {
+      paymentIntentId,
+      gigId,
+      songId,
+      songTitle,
+      fanName,
+      fanEmail,
+      fanPhone,
+      tipCents,
+      note,
+      platformFee,
+    } = req.body;
+
+    if (!paymentIntentId || !gigId) {
+      return res.status(400).json({ error: 'paymentIntentId and gigId are required' });
+    }
+
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+
+    if (paymentIntent.status !== 'succeeded') {
+      return res.status(400).json({ error: `Payment not completed (status: ${paymentIntent.status})` });
+    }
+
+    const meta = paymentIntent.metadata || {};
+    if (meta.gigId && meta.gigId !== gigId) {
+      return res.status(400).json({ error: 'Gig ID does not match payment' });
+    }
+
+    await upsertGigRequest(paymentIntent, {
+      gigId,
+      songId,
+      songTitle,
+      fanName,
+      fanEmail,
+      fanPhone,
+      tipCents,
+      note,
+      platformFee,
+      createdVia: 'client',
+    });
+
+    sendTipOrRequestPushNotifications(paymentIntent).catch((err) => {
+      console.error('❌ sendTipPush after save-request:', err.message);
+    });
+
+    console.log('✅ Saved request via /save-request:', paymentIntentId);
+    res.json({ success: true, requestId: paymentIntentId });
+  } catch (error) {
+    console.error('Error saving request:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -358,41 +474,8 @@ app.post('/webhook', async (req, res) => {
       // Create request in Firestore as backup (in case frontend save failed)
       if (db && paymentIntent.metadata && paymentIntent.metadata.gigId) {
         try {
-          const gigId = paymentIntent.metadata.gigId;
-          const songId = paymentIntent.metadata.songId || 'tip-only';
-          const songTitle = paymentIntent.metadata.songTitle || 'Tip Only';
-          const fanName = paymentIntent.metadata.fanName || 'Anonymous';
-          const fanEmail = paymentIntent.metadata.fanEmail || null;
-          const fanPhone = paymentIntent.metadata.fanPhone || null;
-          const tipCents = paymentIntent.amount;
-          const platformFee = paymentIntent.application_fee_amount || Math.round(paymentIntent.amount * 0.10);
-          
-          // Same document ID as client (paymentIntentId) so webhook + browser cannot double-create
-          const requestsRef = db.collection('gigs').doc(gigId).collection('requests');
-          const requestData = {
-            songId: songId,
-            songTitle: songTitle,
-            fanName: fanName,
-            tipCents: tipCents,
-            note: '',
-            status: songId === 'tip-only' ? 'tip-only' : 'queued',
-            currency: paymentIntent.currency.toUpperCase(),
-            priority: Date.now(),
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-            paymentIntentId: paymentIntent.id,
-            paymentStatus: 'succeeded',
-            platformFee: platformFee,
-            createdVia: 'webhook',
-            ...(fanEmail && { fanEmail }),
-            ...(fanPhone && { fanPhone })
-          };
-
-          await requestsRef.doc(paymentIntent.id).set(requestData, { merge: true });
+          await upsertGigRequest(paymentIntent, { createdVia: 'webhook' });
           console.log('✅ Upserted request in Firestore via webhook:', paymentIntent.id);
-          console.log('Gig ID:', gigId);
-          console.log('Song ID:', songId);
-          console.log('Fan Name:', fanName);
-          console.log('Tip Amount:', tipCents, 'cents');
         } catch (error) {
           console.error('❌ Error creating request in Firestore via webhook:', error);
           console.error('Payment Intent ID:', paymentIntent.id);
@@ -477,6 +560,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`   POST /create-connect-account`);
   console.log(`   POST /connect-account-status`);
   console.log(`   POST /create-payment-intent`);
+  console.log(`   POST /save-request`);
   console.log(`   POST /payout-dashboard-link`);
   console.log(`   POST /webhook`);
   console.log(`\n🔑 Environment variables:`);
